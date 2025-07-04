@@ -1,52 +1,47 @@
 name: Build RustDesk macOS Universal
 
-on:
-  push:
-    branches: [ main ]
-  workflow_dispatch:
+on: [push, workflow_dispatch]
 
 jobs:
   build:
-    runs-on: macos-14
+    runs-on: macos-latest
     env:
-      FLUTTER_DIR: flutter          # pubspec.yaml 所在目录
-      APP_NAME: RustDesk
-      FLUTTER_SDK: "3.24.4"         # 代码当前可编译的最后一个版本
+      FLUTTER_DIR: flutter
+      FLUTTER_SDK: 3.24.4
 
     steps:
-    # 1️⃣ 取代码
+    # 1. Checkout
     - uses: actions/checkout@v4
       with:
         submodules: recursive
 
-    # 2️⃣ 安装指定版本的 Flutter
+    # 2. Setup Flutter
     - uses: subosito/flutter-action@v2
       with:
         channel: stable
-        flutter-version: ${{ env.FLUTTER_SDK }}   # <-- 正确写法
+        flutter-version: ${{ env.FLUTTER_SDK }}
 
-    # 3️⃣ 安装并执行 flutter_rust_bridge codegen
-    - name: Generate Dart ↔ Rust 桥接文件
+    # 3. Install deps & 生成桥接代码
+    - name: Install & Codegen
       run: |
-        dart pub global activate flutter_rust_bridge_codegen 1.80.1
-        export PATH="$HOME/.pub-cache/bin:$PATH"
         cd ${{ github.workspace }}/${{ env.FLUTTER_DIR }}
         flutter pub get
-        flutter_rust_bridge_codegen \
+        flutter pub run flutter_rust_bridge_codegen \
           --rust-input ../src/flutter_ffi.rs \
           --dart-output lib/generated_bridge.dart
 
-    # 4️⃣ CocoaPods
-    - name: Pod install (arm64 + x86_64)
+    # 4. CocoaPods 安装（ARM + Intel）
+    - name: Pod install
       run: |
         cd ${{ github.workspace }}/${{ env.FLUTTER_DIR }}
-        arch -arm64 pod install   --project-directory=macos
-        arch -x86_64 pod install --project-directory=macos || true   # x86 机器才会真跑
+        arch -arm64 pod install --project-directory=macos
+        arch -x86_64 pod install --project-directory=macos || true
 
-    # 5️⃣ 编译 macOS
-    - name: flutter build macos
+    # 5. Build macOS
+    - name: Build macOS release
       run: |
         cd ${{ github.workspace }}/${{ env.FLUTTER_DIR }}
+        flutter clean
         flutter build macos --release --dart-define=BUNDLE_MODE=true
 
-    # 6️⃣ (可选) Codesign / Lipo 等操作，这里省略
+    # 6.（可选）后续 lipo、codesign、打包等
