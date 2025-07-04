@@ -1,0 +1,77 @@
+name: Build RustDesk for macOS
+
+on:
+  # 触发时机：主分支推送时自动构建
+  push:
+    branches: [ main ]
+  # 手动触发构建按钮  
+  workflow_dispatch:
+
+jobs:
+  build-macos:
+    runs-on: macos-latest
+    env:
+      FLUTTER_CHANNEL: stable  # 使用稳定版Flutter
+      APP_NAME: RustDesk       # 应用名称
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        # 递归获取子模块（RustDesk编译必需）
+        submodules: recursive
+
+    - name: Setup Flutter
+      uses: subosito/flutter-action@v2
+      with:
+        channel: ${{ env.FLUTTER_CHANNEL }}
+        # M1/M2芯片需指定arm64架构
+        architecture: arm64
+
+    - name: Verify Flutter
+      run: flutter doctor -v
+
+    - name: Clear build cache
+      run: |
+        flutter clean
+        rm -rf build
+
+    - name: Get dependencies
+      run: flutter pub get
+
+    - name: Build macOS bundle
+      run: |
+        # 关键：启用bundle模式确保包含Flutter框架
+        flutter build macos --release --dart-define=BUNDLE_MODE=true
+        
+        # 确认框架目录存在
+        ls -l build/macos/Build/Products/Release/${{ env.APP_NAME }}.app/Contents/Frameworks/
+
+    # 签名的关键步骤 -------------------------
+    - name: Sign Flutter framework
+      run: |
+        cd build/macos/Build/Products/Release
+        
+        # 对Flutter框架进行ad-hoc签名
+        codesign --force --deep --sign - \
+          "${{ env.APP_NAME }}.app/Contents/Frameworks/FlutterMacOS.framework"
+        
+        # 对整个应用签名
+        codesign --force --deep --sign - \
+          "${{ env.APP_NAME }}.app"
+        
+        # 验证签名状态
+        codesign -dv --verbose=4 "${{ env.APP_NAME }}.app"
+
+    - name: Package application
+      run: |
+        cd build/macos/Build/Products/Release
+        # 创建带版本号的ZIP包
+        VERSION=$(date +%Y%m%d)
+        zip -r "Rustdesk-$VERSION.zip" "${{ env.APP_NAME }}.app"
+
+    - name: Upload artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: RustDesk-macOS
+        path: build/macos/Build/Products/Release/Rustdesk-*.zip
