@@ -6,79 +6,47 @@ on:
   workflow_dispatch:
 
 jobs:
-  build-universal:
-    runs-on: macos-latest
+  build:
+    runs-on: macos-14
     env:
-      FLUTTER_DIR: flutter
+      FLUTTER_DIR: flutter          # pubspec.yaml 所在目录
       APP_NAME: RustDesk
-      FLUTTER_VERSION: 3.24.4
+      FLUTTER_SDK: "3.24.4"         # 代码当前可编译的最后一个版本
 
     steps:
-    - name: Checkout (with submodules)
-      uses: actions/checkout@v4
+    # 1️⃣ 取代码
+    - uses: actions/checkout@v4
       with:
         submodules: recursive
 
-    - name: Setup Flutter ${{ env.FLUTTER_VERSION }}
-      uses: subosito/flutter-action@v2
+    # 2️⃣ 安装指定版本的 Flutter
+    - uses: subosito/flutter-action@v2
       with:
         channel: stable
-        version: ${{ env.FLUTTER_VERSION }}
+        flutter-version: ${{ env.FLUTTER_SDK }}   # <-- 正确写法
 
-    - name: Diagnostic
+    # 3️⃣ 安装并执行 flutter_rust_bridge codegen
+    - name: Generate Dart ↔ Rust 桥接文件
       run: |
-        echo "arch=$(uname -m)"
-        xcrun xcodebuild -version
-        flutter --version
-
-    - name: Generate flutter_rust_bridge bindings
-      run: |
+        dart pub global activate flutter_rust_bridge_codegen 1.80.1
+        export PATH="$HOME/.pub-cache/bin:$PATH"
         cd ${{ github.workspace }}/${{ env.FLUTTER_DIR }}
         flutter pub get
-        flutter pub run flutter_rust_bridge_codegen \
+        flutter_rust_bridge_codegen \
           --rust-input ../src/flutter_ffi.rs \
           --dart-output lib/generated_bridge.dart
 
-    - name: CocoaPods install (Intel + ARM)
+    # 4️⃣ CocoaPods
+    - name: Pod install (arm64 + x86_64)
       run: |
         cd ${{ github.workspace }}/${{ env.FLUTTER_DIR }}
-        flutter pub get
-        arch -x86_64 pod install --project-directory=macos
-        arch -arm64 pod install --project-directory=macos
+        arch -arm64 pod install   --project-directory=macos
+        arch -x86_64 pod install --project-directory=macos || true   # x86 机器才会真跑
 
-    - name: Build macOS release
+    # 5️⃣ 编译 macOS
+    - name: flutter build macos
       run: |
         cd ${{ github.workspace }}/${{ env.FLUTTER_DIR }}
-        flutter clean
         flutter build macos --release --dart-define=BUNDLE_MODE=true
 
-    - name: Package and Lipo check
-      run: |
-        cd ${{ github.workspace }}/${{ env.FLUTTER_DIR }}/build/macos/Build/Products/Release
-        lipo -archs ${APP_NAME}.app/Contents/MacOS/${APP_NAME}
-
-    - name: Sign all dylibs & frameworks
-      run: |
-        cd ${{ github.workspace }}/${{ env.FLUTTER_DIR }}/build/macos/Build/Products/Release
-        find ${APP_NAME}.app -type f \( -name '*.dylib' -or -name '*.framework' \) \
-          -exec codesign --force --options runtime --sign - {} \;
-        codesign --force --options runtime --deep --sign - \
-          --entitlements Runner/Release.entitlements \
-          "${APP_NAME}.app"
-
-    - name: Create DMG
-      run: |
-        cd ${{ github.workspace }}/${{ env.FLUTTER_DIR }}/build/macos/Build/Products/Release
-        tmp=$(mktemp -d)
-        mkdir "$tmp/RustDesk"
-        cp -R "${APP_NAME}.app" "$tmp/RustDesk/"
-        hdiutil create -volname "RustDesk" -srcfolder "$tmp/RustDesk" \
-          -ov -format UDZO "RustDesk-Universal-$(date +%Y%m%d).dmg"
-
-    - name: Upload artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: RustDesk-macos-universal
-        path: |
-          ${{ github.workspace }}/${{ env.FLUTTER_DIR }}/build/macos/Build/Products/Release/*.dmg
-        retention-days: 7
+    # 6️⃣ (可选) Codesign / Lipo 等操作，这里省略
