@@ -11,7 +11,7 @@ jobs:
     env:
       FLUTTER_CHANNEL: stable
       APP_NAME: RustDesk
-      FLUTTER_DIR: flutter  # 指定 Flutter 目录
+      FLUTTER_DIR: flutter
 
     steps:
     - name: Checkout code with submodules
@@ -48,7 +48,7 @@ jobs:
     - name: Build universal binary
       run: |
         cd ${{ github.workspace }}/${{ env.FLUTTER_DIR }}
-        flutter build macos --release --dart-define=BUNDLE_MODE=true --target-platform darwin-x86_64,darwin-arm64
+        flutter build macos --release --dart-define=BUNDLE_MODE=true
         cd build/macos/Build/Products/Release
         lipo -archs ${{ env.APP_NAME }}.app/Contents/MacOS/${{ env.APP_NAME }}
 
