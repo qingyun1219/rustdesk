@@ -1,4 +1,4 @@
-name: Build RustDesk for macOS (Intel+ARM)
+name: Build RustDesk macOS Universal
 
 on:
   push:
@@ -9,72 +9,76 @@ jobs:
   build-universal:
     runs-on: macos-latest
     env:
-      FLUTTER_CHANNEL: stable
-      APP_NAME: RustDesk
       FLUTTER_DIR: flutter
+      APP_NAME: RustDesk
+      FLUTTER_VERSION: 3.24.4
 
     steps:
-    - name: Checkout code with submodules
+    - name: Checkout (with submodules)
       uses: actions/checkout@v4
       with:
         submodules: recursive
 
-    - name: Setup Flutter
+    - name: Setup Flutter ${{ env.FLUTTER_VERSION }}
       uses: subosito/flutter-action@v2
       with:
-        channel: ${{ env.FLUTTER_CHANNEL }}
+        channel: stable
+        version: ${{ env.FLUTTER_VERSION }}
 
-    - name: Diagnostic check
+    - name: Diagnostic
       run: |
-        echo "System architecture: $(uname -m)"
+        echo "arch=$(uname -m)"
         xcrun xcodebuild -version
-        flutter doctor -v
-        which pod
+        flutter --version
 
-    - name: Deep clean workspace
-      run: |
-        cd ${{ github.workspace }}/${{ env.FLUTTER_DIR }}
-        flutter clean
-        rm -rf build macos/Pods macos/Runner.xcworkspace
-        pod cache clean --all
-
-    - name: Install dependencies
+    - name: Generate flutter_rust_bridge bindings
       run: |
         cd ${{ github.workspace }}/${{ env.FLUTTER_DIR }}
         flutter pub get
-        arch -x86_64 pod install --project-directory=macos || echo "Intel pod install may have warnings"
-        arch -arm64 pod install --project-directory=macos || echo "ARM pod install may have warnings"
+        flutter pub run flutter_rust_bridge_codegen \
+          --rust-input ../src/flutter_ffi.rs \
+          --dart-output lib/generated_bridge.dart
 
-    - name: Build universal binary
+    - name: CocoaPods install (Intel + ARM)
       run: |
         cd ${{ github.workspace }}/${{ env.FLUTTER_DIR }}
+        flutter pub get
+        arch -x86_64 pod install --project-directory=macos
+        arch -arm64 pod install --project-directory=macos
+
+    - name: Build macOS release
+      run: |
+        cd ${{ github.workspace }}/${{ env.FLUTTER_DIR }}
+        flutter clean
         flutter build macos --release --dart-define=BUNDLE_MODE=true
-        cd build/macos/Build/Products/Release
-        lipo -archs ${{ env.APP_NAME }}.app/Contents/MacOS/${{ env.APP_NAME }}
 
-    - name: Sign entire application
+    - name: Package and Lipo check
       run: |
-        cd build/macos/Build/Products/Release
-        find "${{ env.APP_NAME }}.app" -type f \( -name "*.dylib" -or -name "*.framework" \) | while read lib; do
-          codesign --force --options runtime --sign - "$lib"
-        done
-        codesign --force --options runtime --deep --sign - --entitlements ../../Runner/Release.entitlements "${{ env.APP_NAME }}.app"
-        codesign -dv --verbose=4 "${{ env.APP_NAME }}.app"
-        spctl --assess -vvv "${{ env.APP_NAME }}.app"
+        cd ${{ github.workspace }}/${{ env.FLUTTER_DIR }}/build/macos/Build/Products/Release
+        lipo -archs ${APP_NAME}.app/Contents/MacOS/${APP_NAME}
 
-    - name: Create universal installer
+    - name: Sign all dylibs & frameworks
       run: |
-        cd build/macos/Build/Products/Release
-        TEMP_DIR="$(mktemp -d)"
-        mkdir "$TEMP_DIR/RustDesk"
-        cp -R "${{ env.APP_NAME }}.app" "$TEMP_DIR/RustDesk/"
-        hdiutil create -volname "RustDesk" -srcfolder "$TEMP_DIR/RustDesk" -ov -format UDZO "RustDesk-Universal-$(date +%Y%m%d).dmg"
-        rm -rf "$TEMP_DIR"
-        ls -lh *.dmg
+        cd ${{ github.workspace }}/${{ env.FLUTTER_DIR }}/build/macos/Build/Products/Release
+        find ${APP_NAME}.app -type f \( -name '*.dylib' -or -name '*.framework' \) \
+          -exec codesign --force --options runtime --sign - {} \;
+        codesign --force --options runtime --deep --sign - \
+          --entitlements Runner/Release.entitlements \
+          "${APP_NAME}.app"
 
-    - name: Upload universal artifact
+    - name: Create DMG
+      run: |
+        cd ${{ github.workspace }}/${{ env.FLUTTER_DIR }}/build/macos/Build/Products/Release
+        tmp=$(mktemp -d)
+        mkdir "$tmp/RustDesk"
+        cp -R "${APP_NAME}.app" "$tmp/RustDesk/"
+        hdiutil create -volname "RustDesk" -srcfolder "$tmp/RustDesk" \
+          -ov -format UDZO "RustDesk-Universal-$(date +%Y%m%d).dmg"
+
+    - name: Upload artifact
       uses: actions/upload-artifact@v4
       with:
-        name: RustDesk-MacOS-Universal
-        path: build/macos/Build/Products/Release/RustDesk-Universal-*.dmg
+        name: RustDesk-macos-universal
+        path: |
+          ${{ github.workspace }}/${{ env.FLUTTER_DIR }}/build/macos/Build/Products/Release/*.dmg
         retention-days: 7
