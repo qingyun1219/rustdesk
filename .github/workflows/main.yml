@@ -1,77 +1,115 @@
 name: Build RustDesk for macOS
 
 on:
-  # 触发时机：主分支推送时自动构建
   push:
     branches: [ main ]
-  # 手动触发构建按钮  
   workflow_dispatch:
 
 jobs:
   build-macos:
     runs-on: macos-latest
     env:
-      FLUTTER_CHANNEL: stable  # 使用稳定版Flutter
-      APP_NAME: RustDesk       # 应用名称
+      FLUTTER_CHANNEL: stable
+      APP_NAME: RustDesk
 
     steps:
-    - name: Checkout code
+    # 1. 代码检出（包含子模块）
+    - name: Checkout repository
       uses: actions/checkout@v4
       with:
-        # 递归获取子模块（RustDesk编译必需）
-        submodules: recursive
+        submodules: recursive  # RustDesk 需要子模块
 
+    # 2. 安装 Flutter（针对 Apple Silicon）
     - name: Setup Flutter
       uses: subosito/flutter-action@v2
       with:
         channel: ${{ env.FLUTTER_CHANNEL }}
-        # M1/M2芯片需指定arm64架构
-        architecture: arm64
+        architecture: arm64  # 必须为 M1/M2 芯片设置
+        cache: true
+        cache-key: flutter-arm64
 
-    - name: Verify Flutter
-      run: flutter doctor -v
+    # 3. 环境验证
+    - name: Verify environment
+      run: |
+        flutter --version
+        xcodebuild -version  # 检查 Xcode 版本
 
-    - name: Clear build cache
+    # 4. 清理构建缓存
+    - name: Clean workspace
       run: |
         flutter clean
-        rm -rf build
+        rm -rf build macos/Pods
+        pod cache clean --all
 
-    - name: Get dependencies
-      run: flutter pub get
+    # 5. 安装依赖
+    - name: Install dependencies
+      run: |
+        flutter pub get
+        cd macos
+        pod install  # CocoaPods 依赖
+        cd ..
 
+    # 6. 构建应用 (关键配置)
     - name: Build macOS bundle
       run: |
-        # 关键：启用bundle模式确保包含Flutter框架
-        flutter build macos --release --dart-define=BUNDLE_MODE=true
+        # 启用 bundle 模式确保框架包含
+        export BUNDLE_MODE=true
         
-        # 确认框架目录存在
-        ls -l build/macos/Build/Products/Release/${{ env.APP_NAME }}.app/Contents/Frameworks/
+        # 构建命令
+        flutter build macos \
+          --release \
+          --dart-define B$BUNDLE_MODE \
+          --no-codesign  # 稍后手动签名
+        
+        # 验证框架存在
+        ls -lR build/macos/Build/Products/Release/${{ env.APP_NAME }}.app/Contents/Frameworks
 
-    # 签名的关键步骤 -------------------------
-    - name: Sign Flutter framework
+    # 7. 签名应用 (解决崩溃问题的关键)
+    - name: Ad-hoc codesigning
       run: |
         cd build/macos/Build/Products/Release
         
-        # 对Flutter框架进行ad-hoc签名
-        codesign --force --deep --sign - \
-          "${{ env.APP_NAME }}.app/Contents/Frameworks/FlutterMacOS.framework"
+        # 先签名 Flutter 框架
+        find ${{ env.APP_NAME }}.app -name "*.framework" | while read framework; do
+          codesign --force --deep --sign - "$framework"
+        done
         
-        # 对整个应用签名
+        # 再签名整个应用
         codesign --force --deep --sign - \
+          --options runtime \
+          --entitlements ../../Runner/Release.entitlements \
           "${{ env.APP_NAME }}.app"
         
-        # 验证签名状态
+        # 验证签名
         codesign -dv --verbose=4 "${{ env.APP_NAME }}.app"
 
-    - name: Package application
+    # 8. 创建 DMG 安装包 (可选但推荐)
+    - name: Create DMG installer
       run: |
+        brew install create-dmg || brew upgrade create-dmg
+        
         cd build/macos/Build/Products/Release
-        # 创建带版本号的ZIP包
-        VERSION=$(date +%Y%m%d)
-        zip -r "Rustdesk-$VERSION.zip" "${{ env.APP_NAME }}.app"
+        DMG_NAME="RustDesk-$(date +%Y%m%d).dmg"
+        
+        create-dmg \
+          --volname "RustDesk Installer" \
+          --window-pos 200 120 \
+          --window-size 600 300 \
+          --icon-size 100 \
+          --icon "${{ env.APP_NAME }}.app" 100 100 \
+          --app-drop-link 450 100 \
+          "$DMG_NAME" \
+          .
+        
+        # 验证文件
+        ls -lh *.dmg
 
-    - name: Upload artifact
-      uses: actions/upload-artifact@v3
+    # 9. 上传成品 (使用最新的 v4 版本)
+    - name: Upload build artifact
+      uses: actions/upload-artifact@v4  # 已升级到 v4
       with:
         name: RustDesk-macOS
-        path: build/macos/Build/Products/Release/Rustdesk-*.zip
+        path: |
+          build/macos/Build/Products/Release/*.dmg
+          build/macos/Build/Products/Release/${{ env.APP_NAME }}.app.zip
+        retention-days: 7
