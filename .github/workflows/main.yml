@@ -7,26 +7,23 @@ on:
 
 jobs:
   build-universal:
-    runs-on: macos-latest  # 使用latest的macOS运行器
+    runs-on: macos-latest
     env:
       FLUTTER_CHANNEL: stable
       APP_NAME: RustDesk
+      FLUTTER_DIR: flutter  # 新增环境变量，指定 Flutter 目录
 
     steps:
-    # 1. 检出代码（包含子模块）
     - name: Checkout code with submodules
       uses: actions/checkout@v4
       with:
         submodules: recursive
 
-    # 2. 安装 Flutter（自动适配架构）
     - name: Setup Flutter
       uses: subosito/flutter-action@v2
       with:
         channel: ${{ env.FLUTTER_CHANNEL }}
-        # 不指定架构，让系统自动处理
-        
-    # 3. 环境检查（进行常见问题诊断）
+
     - name: Diagnostic check
       run: |
         echo "System architecture: $(uname -m)"
@@ -34,83 +31,47 @@ jobs:
         flutter doctor -v
         which pod
 
-    # 4. 深度清理工作区
     - name: Deep clean workspace
       run: |
-        # 保证在项目根目录中运行
-        cd ${{ github.workspace }}  # 确保路径正确
+        cd ${{ github.workspace }}/${{ env.FLUTTER_DIR }}
         flutter clean
         rm -rf build macos/Pods macos/Runner.xcworkspace
         pod cache clean --all
 
-    # 5. 安装依赖（为ARM和Intel分别安装）
     - name: Install dependencies
       run: |
-        cd ${{ github.workspace }}  # 确保在根目录
+        cd ${{ github.workspace }}/${{ env.FLUTTER_DIR }}
         flutter pub get
-        
-        # Intel架构依赖
         arch -x86_64 pod install --project-directory=macos || echo "Intel pod install may have warnings"
-        
-        # ARM架构依赖
         arch -arm64 pod install --project-directory=macos || echo "ARM pod install may have warnings"
 
-    # 6. 构建通用二进制文件（核心部分）
     - name: Build universal binary
       run: |
-        cd ${{ github.workspace }}  # 确保路径正确
-        flutter build macos \
-          --release \
-          --dart-define=BUNDLE_MODE=true \
-          --no-codesign \
-          --target-platform darwin-x86_64,darwin-arm64
-        
-        # 验证输出
+        cd ${{ github.workspace }}/${{ env.FLUTTER_DIR }}
+        flutter build macos --release --dart-define=BUNDLE_MODE=true --no-codesign --target-platform darwin-x86_64,darwin-arm64
         cd build/macos/Build/Products/Release
         lipo -archs ${{ env.APP_NAME }}.app/Contents/MacOS/${{ env.APP_NAME }}
 
-    # 7. 签名整个应用（解决库加载问题）
     - name: Sign entire application
       run: |
         cd build/macos/Build/Products/Release
-        
-        # 签名所有框架和动态库
         find "${{ env.APP_NAME }}.app" -type f \( -name "*.dylib" -or -name "*.framework" \) | while read lib; do
           codesign --force --options runtime --sign - "$lib"
         done
-        
-        # 签名整个应用
-        codesign --force --options runtime --deep --sign - \
-          --entitlements ../../Runner/Release.entitlements \
-          "${{ env.APP_NAME }}.app"
-          
-        # 验证签名
+        codesign --force --options runtime --deep --sign - --entitlements ../../Runner/Release.entitlements "${{ env.APP_NAME }}.app"
         codesign -dv --verbose=4 "${{ env.APP_NAME }}.app"
         spctl --assess -vvv "${{ env.APP_NAME }}.app"
 
-    # 8. 创建安装包（直接可用的DMG）
     - name: Create universal installer
       run: |
         cd build/macos/Build/Products/Release
-        
-        # 创建临时文件夹
         TEMP_DIR="$(mktemp -d)"
         mkdir "$TEMP_DIR/RustDesk"
-        
-        # 复制应用到临时目录
         cp -R "${{ env.APP_NAME }}.app" "$TEMP_DIR/RustDesk/"
-        
-        # 创建DMG
-        hdiutil create -volname "RustDesk" \
-          -srcfolder "$TEMP_DIR/RustDesk" \
-          -ov -format UDZO \
-          "RustDesk-Universal-$(date +%Y%m%d).dmg"
-        
-        # 清理临时文件夹
+        hdiutil create -volname "RustDesk" -srcfolder "$TEMP_DIR/RustDesk" -ov -format UDZO "RustDesk-Universal-$(date +%Y%m%d).dmg"
         rm -rf "$TEMP_DIR"
         ls -lh *.dmg
 
-    # 9. 上传构建结果
     - name: Upload universal artifact
       uses: actions/upload-artifact@v4
       with:
